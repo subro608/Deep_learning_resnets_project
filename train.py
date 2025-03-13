@@ -5,19 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as transforms
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import numpy as np
-import json
-from PIL import ImageFilter, Image
-import random
-import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
-import torchvision.transforms as transforms
-from tqdm import tqdm
-from model import create_pyramidnet
+from model_best import create_pyramidnet
 from dataset import CIFAR10Dataset
 import os
 import matplotlib.pyplot as plt
@@ -27,7 +15,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as transforms
 from tqdm import tqdm
-from model import create_pyramidnet
+from model_best import create_pyramidnet
 from dataset import CIFAR10Dataset
 from PIL import ImageFilter, Image
 import random
@@ -53,7 +41,6 @@ class RandomBlur:
                     kernel_size += 1  # Make sure kernel size is odd
                 return img.filter(ImageFilter.GaussianBlur(radius=blur_strength))
         return img
-
 def evaluate(model, data_loader, device, criterion=None):
     """Evaluate model on the provided data loader"""
     model.eval()
@@ -79,7 +66,6 @@ def evaluate(model, data_loader, device, criterion=None):
     avg_loss = running_loss / len(data_loader) if criterion is not None else None
     
     return accuracy, avg_loss
-
 def plot_metrics(metrics, save_path='metrics_plots'):
     """Plot and save training and validation metrics"""
     os.makedirs(save_path, exist_ok=True)
@@ -114,33 +100,8 @@ def plot_metrics(metrics, save_path='metrics_plots'):
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"Metrics plots saved to {plot_path}")
-    
     # Also save individual plots for more detail
-    # Loss plot
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs, metrics['train_loss'], 'b-', label='Training Loss')
-    plt.plot(epochs, metrics['val_loss'], 'r-', label='Validation Loss')
-    plt.title('Training and Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(save_path, 'loss_curve.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Accuracy plot
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs, metrics['train_acc'], 'b-', label='Training Accuracy')
-    plt.plot(epochs, metrics['val_acc'], 'r-', label='Validation Accuracy')
-    plt.title('Training and Validation Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(save_path, 'accuracy_curve.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-
+    # Loss plot and Accuracy plot code...
 def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -149,19 +110,13 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
     # Set up transforms with augmentation including blur
     train_transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.ToPILImage(),  # Convert to PIL for custom blur transform
-        RandomBlur(p=0.7, blur_limit=(0.5, 2.0)),  # High probability of applying blur
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-        transforms.ToTensor(),  # Convert back to tensor
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
     ])
-    
-    # For test data, we can add a slight blur to match test conditions
+
     test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.ToPILImage(),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
     ])
@@ -179,9 +134,9 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=0, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=0, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=0, pin_memory=True)
     
     # Initialize PyramidNet model
     model_type = "bottleneck" if use_bottleneck else "basic"
@@ -204,7 +159,8 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
         'train_loss': [],
         'train_acc': [],
         'val_loss': [],
-        'val_acc': []
+        'val_acc': [],
+        'lr': []
     }
     
     # Training parameters
@@ -223,7 +179,7 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
     
     best_val_acc = 0.0
     early_stop_counter = 0
-    max_early_stop = 80  # Stop if no improvement for 80 epochs
+    max_early_stop = 160  # Stop if no improvement for 160 epochs
     
     for epoch in range(1000):  # More epochs for deeper training
         # Training
@@ -253,21 +209,39 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
         # Validation metrics
         val_acc, val_loss = evaluate(model, val_loader, device, criterion)
         
+        # Update learning rate
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        
         # Store metrics
         metrics['train_loss'].append(train_loss)
         metrics['train_acc'].append(train_acc)
         metrics['val_loss'].append(val_loss)
         metrics['val_acc'].append(val_acc)
+        metrics['lr'].append(current_lr)
+        
+        print(f"Epoch {epoch+1}: Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {current_lr:.6f}")
         
         # Save metrics to JSON after each epoch
         with open('metrics/training_metrics.json', 'w') as f:
+            import json
             json.dump(metrics, f, indent=4)
         
-        # Update learning rate
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
+        # Save metrics to CSV for easier analysis
+        import pandas as pd
+        df = pd.DataFrame({
+            'epoch': range(1, epoch + 2),
+            'train_loss': metrics['train_loss'],
+            'val_loss': metrics['val_loss'],
+            'train_acc': metrics['train_acc'],
+            'val_acc': metrics['val_acc'],
+            'lr': metrics['lr']
+        })
+        df.to_csv('metrics/metrics_history.csv', index=False)
         
-        print(f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {current_lr:.6f}")
+        # Plot metrics at regular intervals
+        if (epoch + 1) % 10 == 0:
+            plot_metrics(metrics)
         
         # Save checkpoint (every 10 epochs to save space)
         if (epoch + 1) % 10 == 0:
@@ -281,9 +255,6 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
                 'val_acc': val_acc,
                 'metrics': metrics
             }, checkpoint_path)
-            
-            # Plot metrics at regular intervals
-            plot_metrics(metrics)
         
         # Save best model
         if val_acc > best_val_acc:
@@ -324,7 +295,7 @@ def train_model(num_blocks=[2, 2, 2], use_bottleneck=True, alpha=270):
     checkpoint = torch.load(best_model_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    test_acc, _ = evaluate(model, test_loader, device)
+    test_acc, _ = evaluate(model, test_loader, device, criterion)
     print(f"Test accuracy with best model: {test_acc:.4f}")
     
     return model, metrics
@@ -343,7 +314,8 @@ if __name__ == "__main__":
         'train_loss': metrics['train_loss'],
         'val_loss': metrics['val_loss'],
         'train_acc': metrics['train_acc'],
-        'val_acc': metrics['val_acc']
+        'val_acc': metrics['val_acc'],
+        'lr': metrics['lr']
     })
     
     df.to_csv('metrics/metrics_history.csv', index=False)
