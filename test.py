@@ -1,198 +1,265 @@
+import os
 import torch
+import torch.nn as nn
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, classification_report
+from tqdm import tqdm
 from model import create_pyramidnet
 from dataset import CIFAR10Dataset
-import seaborn as sns
 
-def evaluate_on_test_batch(num_blocks=[1, 1, 1], use_bottleneck=False, alpha=150):
-    """
-    Evaluate the trained PyramidNet model on the standard CIFAR-10 test batch
-    and generate detailed performance metrics.
-    """
-    # Define the class names for CIFAR-10
-    class_names = [
-        'airplane', 'automobile', 'bird', 'cat', 'deer',
-        'dog', 'frog', 'horse', 'ship', 'truck'
-    ]
-    
-    # Set up device
+def load_model(model_path, num_blocks=[4, 4, 4], use_bottleneck=True, alpha=270, num_classes=10):
+    """Load a trained PyramidNet model from checkpoint"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
     
-    # Set up transforms (same as used during training)
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-    ])
+    # Create model architecture with the correct parameters
+    model_type = "bottleneck" if use_bottleneck else "basic"
+    print(f"Loading PyramidNet with {model_type} blocks, alpha={alpha}, layers={num_blocks}")
     
-    # Load the test dataset (standard CIFAR-10 test batch)
-    test_file = ["test_batch"]
-    test_dataset = CIFAR10Dataset(test_file, transform=test_transform)
-    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
+    model = create_pyramidnet(
+        num_blocks, 
+        use_bottleneck=use_bottleneck, 
+        alpha=alpha, 
+        num_classes=num_classes
+    )
     
-    # Load the model with the same configuration used during training
-    model = create_pyramidnet(num_blocks, use_bottleneck=use_bottleneck, alpha=alpha, num_classes=10)
-    
-    # Print model configuration
-    block_type = "Bottleneck" if use_bottleneck else "Basic"
-    print(f"PyramidNet configuration: {block_type} blocks, alpha={alpha}, layers={num_blocks}")
-    
-    # Calculate parameter count
-    param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model parameter count: {param_count:,}")
-    
-    # Load the trained model weights
-    try:
-        model_path = 'saved_models/best_pyramidnet.pth'
-        model.load_state_dict(torch.load(model_path, weights_only=True))
-        print(f"Loaded model from {model_path}")
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        print("Make sure you've trained the model with this configuration first.")
-        return
-    
-    # Move model to device
+    # Load weights
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
     model.eval()
     
-    # Evaluate the model
+    return model, checkpoint
+
+def evaluate(model, data_loader, device, verbose=True):
+    """Evaluate model on the provided data loader"""
+    model.eval()
+    criterion = nn.CrossEntropyLoss()
+    
     correct = 0
     total = 0
-    all_preds = []
+    running_loss = 0.0
+    all_predictions = []
     all_labels = []
-    class_correct = [0] * 10
-    class_total = [0] * 10
     
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in tqdm(data_loader, desc="Evaluating"):
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
+            
+            loss = criterion(outputs, labels)
+            running_loss += loss.item()
+            
             _, predicted = torch.max(outputs, 1)
+            all_predictions.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
             
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
-            
-            # For class-wise accuracy
-            for i in range(len(labels)):
-                label = labels[i]
-                class_correct[label] += (predicted[i] == label).item()
-                class_total[label] += 1
-            
-            # Store for confusion matrix
-            all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
     
-    # Calculate overall accuracy
-    accuracy = 100 * correct / total
-    print(f"\nOverall Test Accuracy: {accuracy:.2f}%")
+    accuracy = correct / total
+    avg_loss = running_loss / len(data_loader)
     
-    # Calculate class-wise accuracy
-    print("\nClass-wise Accuracy:")
-    print("===================")
-    for i in range(10):
-        accuracy = 100 * class_correct[i] / class_total[i]
-        print(f"Class {i} ({class_names[i]}): {accuracy:.2f}%")
+    if verbose:
+        print(f"Test Loss: {avg_loss:.4f}")
+        print(f"Test Accuracy: {accuracy:.4f} ({correct}/{total})")
     
-    # Generate confusion matrix
-    cm = confusion_matrix(all_labels, all_preds)
+    return accuracy, avg_loss, all_predictions, all_labels
+
+def plot_confusion_matrix(y_true, y_pred, class_names, save_path=None):
+    """Plot confusion matrix for model predictions"""
+    from sklearn.metrics import confusion_matrix
+    import seaborn as sns
     
-    # Plot confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Normalize confusion matrix
+    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    
     plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+    sns.heatmap(cm_norm, annot=cm, fmt='d', cmap='Blues', 
+                xticklabels=class_names, yticklabels=class_names)
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
     plt.title('Confusion Matrix')
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig('confusion_matrix.png')
-    print("\nConfusion matrix saved as 'confusion_matrix.png'")
     
-    # Print classification report
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        print(f"Confusion matrix saved to {save_path}")
+    
+    plt.show()
+    
+    return cm
+
+def analyze_results(y_true, y_pred, class_names, save_dir='test_results'):
+    """Analyze model predictions and generate reports"""
+    from sklearn.metrics import classification_report, accuracy_score, precision_score, recall_score, f1_score
+    
+    # Create directory for results
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Calculate metrics
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average='macro')
+    recall = recall_score(y_true, y_pred, average='macro')
+    f1 = f1_score(y_true, y_pred, average='macro')
+    
+    print(f"Overall Accuracy: {accuracy:.4f}")
+    print(f"Macro Precision: {precision:.4f}")
+    print(f"Macro Recall: {recall:.4f}")
+    print(f"Macro F1-Score: {f1:.4f}")
+    
+    # Generate and save classification report
+    report = classification_report(y_true, y_pred, target_names=class_names)
     print("\nClassification Report:")
-    print("=====================")
-    report = classification_report(all_labels, all_preds, target_names=class_names)
     print(report)
     
-    # Save results to file
-    with open("test_evaluation_results.txt", "w") as f:
-        f.write(f"PyramidNet Model Evaluation on CIFAR-10 Test Set\n")
-        f.write(f"Configuration: {block_type} blocks, alpha={alpha}, layers={num_blocks}\n")
-        f.write(f"Parameter count: {param_count:,}\n\n")
-        f.write(f"Overall Test Accuracy: {accuracy:.2f}%\n\n")
-        f.write("Class-wise Accuracy:\n")
-        for i in range(10):
-            class_acc = 100 * class_correct[i] / class_total[i]
-            f.write(f"Class {i} ({class_names[i]}): {class_acc:.2f}%\n")
-        f.write("\nClassification Report:\n")
+    with open(os.path.join(save_dir, 'classification_report.txt'), 'w') as f:
+        f.write(f"Overall Accuracy: {accuracy:.4f}\n")
+        f.write(f"Macro Precision: {precision:.4f}\n")
+        f.write(f"Macro Recall: {recall:.4f}\n")
+        f.write(f"Macro F1-Score: {f1:.4f}\n\n")
+        f.write("Classification Report:\n")
         f.write(report)
     
-    print("\nDetailed evaluation results saved to 'test_evaluation_results.txt'")
+    # Generate and save confusion matrix
+    cm = plot_confusion_matrix(
+        y_true, 
+        y_pred, 
+        class_names,
+        save_path=os.path.join(save_dir, 'confusion_matrix.png')
+    )
     
-    # Find and analyze errors
-    print("\nAnalyzing misclassified examples...")
-    
-    # Run one more time to get some misclassified examples
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'confusion_matrix': cm
+    }
+
+def plot_misclassified_examples(model, data_loader, device, class_names, num_examples=10, save_dir='test_results'):
+    """Plot examples of images that were misclassified by the model"""
+    model.eval()
     misclassified_images = []
     misclassified_labels = []
     misclassified_preds = []
     
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in data_loader:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
-            _, predicted = torch.max(outputs, 1)
+            _, preds = torch.max(outputs, 1)
             
             # Find misclassified examples
-            mask = (predicted != labels)
-            if torch.any(mask):
-                misclassified_idx = torch.where(mask)[0]
-                misclassified_images.extend(images[misclassified_idx].cpu().numpy())
-                misclassified_labels.extend(labels[misclassified_idx].cpu().numpy())
-                misclassified_preds.extend(predicted[misclassified_idx].cpu().numpy())
+            misclassified_idx = (preds != labels).nonzero(as_tuple=True)[0]
+            
+            for idx in misclassified_idx:
+                misclassified_images.append(images[idx].cpu())
+                misclassified_labels.append(labels[idx].item())
+                misclassified_preds.append(preds[idx].item())
                 
-                # Only collect up to 20 examples
-                if len(misclassified_images) >= 20:
+                if len(misclassified_images) >= num_examples:
                     break
+            
+            if len(misclassified_images) >= num_examples:
+                break
     
-    # Plot some misclassified examples
-    num_to_show = min(10, len(misclassified_images))
-    if num_to_show > 0:
-        plt.figure(figsize=(15, 8))
-        for i in range(num_to_show):
-            plt.subplot(2, 5, i+1)
+    # If no misclassified examples found, return
+    if not misclassified_images:
+        print("No misclassified examples found.")
+        return
+    
+    # Plot the misclassified examples
+    fig, axes = plt.subplots(2, 5, figsize=(15, 6)) if num_examples >= 10 else plt.subplots(1, num_examples, figsize=(15, 3))
+    axes = axes.flatten()
+    
+    # CIFAR-10 mean and std for denormalization
+    mean = torch.tensor([0.4914, 0.4822, 0.4465])
+    std = torch.tensor([0.2023, 0.1994, 0.2010])
+    
+    for i, (img, true_label, pred_label) in enumerate(zip(misclassified_images, misclassified_labels, misclassified_preds)):
+        if i >= len(axes):
+            break
             
-            # Convert the normalized image back for display
-            img = misclassified_images[i].transpose(1, 2, 0)
-            mean = np.array([0.4914, 0.4822, 0.4465])
-            std = np.array([0.2023, 0.1994, 0.2010])
-            img = std * img + mean
-            img = np.clip(img, 0, 1)
-            
-            plt.imshow(img)
-            plt.title(f"True: {class_names[misclassified_labels[i]]}\nPred: {class_names[misclassified_preds[i]]}")
-            plt.axis('off')
+        # Denormalize image
+        img = img * std[:, None, None] + mean[:, None, None]
+        img = torch.clamp(img, 0, 1)
         
-        plt.tight_layout()
-        plt.savefig('misclassified_examples.png')
-        print("Misclassified examples saved as 'misclassified_examples.png'")
+        # Plot image
+        axes[i].imshow(img.permute(1, 2, 0))
+        axes[i].set_title(f"True: {class_names[true_label]}\nPred: {class_names[pred_label]}")
+        axes[i].axis('off')
     
-    return accuracy
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'misclassified_examples.png'), dpi=300, bbox_inches='tight')
+    plt.show()
 
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Evaluate PyramidNet on CIFAR-10 test batch')
-    parser.add_argument('--bottleneck', type=bool, default=False,
-                      help='Use bottleneck blocks in PyramidNet')
-    parser.add_argument('--alpha', type=int, default=270,
-                      help='Alpha parameter for PyramidNet (widening factor)')
-    parser.add_argument('--blocks', type=int, nargs=3, default=[1, 1, 1],
-                      help='Number of blocks in each layer of PyramidNet')
+def main():
+    parser = argparse.ArgumentParser(description='Test PyramidNet on CIFAR-10 test set')
+    parser.add_argument('--model_path', type=str, default='saved_models/best_pyramidnet.pth',
+                        help='Path to the saved model checkpoint')
+    parser.add_argument('--batch_size', type=int, default=128, help='Test batch size')
+    parser.add_argument('--num_blocks', type=int, nargs='+', default=[4, 4, 4],
+                       help='Number of blocks in each pyramid stage')
+    parser.add_argument('--use_bottleneck', action='store_true', default=True,
+                       help='Use bottleneck blocks (default: True)')
+    parser.add_argument('--alpha', type=float, default=270, help='PyramidNet alpha parameter')
     
     args = parser.parse_args()
     
-    evaluate_on_test_batch(args.blocks, args.bottleneck, args.alpha)
+    # Check if model file exists
+    if not os.path.exists(args.model_path):
+        print(f"Error: Model file {args.model_path} does not exist.")
+        return
+    
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Load model
+    model, checkpoint = load_model(
+        args.model_path, 
+        num_blocks=args.num_blocks, 
+        use_bottleneck=args.use_bottleneck, 
+        alpha=args.alpha
+    )
+    
+    # Print model info
+    epoch = checkpoint.get('epoch', 'N/A')
+    val_acc = checkpoint.get('val_acc', 'N/A')
+    print(f"Loaded model from epoch: {epoch}")
+    print(f"Validation accuracy: {val_acc}")
+    
+    # Load test dataset
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ])
+    
+    test_files = ["test_batch"]
+    test_dataset = CIFAR10Dataset(test_files, transform=test_transform)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    
+    # CIFAR-10 class names
+    class_names = ['airplane', 'automobile', 'bird', 'cat', 'deer', 
+                   'dog', 'frog', 'horse', 'ship', 'truck']
+    
+    # Evaluate model
+    print("\nEvaluating model on test set...")
+    accuracy, loss, all_predictions, all_labels = evaluate(model, test_loader, device)
+    
+    # Analyze results
+    print("\nAnalyzing results...")
+    metrics = analyze_results(all_labels, all_predictions, class_names)
+    
+    # Plot misclassified examples
+    print("\nPlotting misclassified examples...")
+    plot_misclassified_examples(model, test_loader, device, class_names)
+    
+    print(f"\nTest completed successfully. Results saved to 'test_results' directory.")
+
+if __name__ == "__main__":
+    main()
