@@ -12,7 +12,7 @@ from model import create_pyramidnet
 #     model.eval()
 #     return model
 def load_model(num_blocks=[3, 3, 3], use_bottleneck=True, alpha=270):
-    model_path = 'saved_models_epoch175_444_270_bottle_0.9480_final_sgd/best_pyramidnet.pth'
+    model_path = 'saved_models/best_pyramidnet.pth'
     checkpoint = torch.load(model_path)
     model = create_pyramidnet(num_blocks, use_bottleneck=use_bottleneck, alpha=alpha, num_classes=10)
     
