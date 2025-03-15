@@ -37,7 +37,7 @@ The implemented PyramidNet architecture features:
 
 ## Performance
 
-Our final PyramidNet model (Bottleneck, [4,4,4], α=270) achieves 83.50%/83.66% accuracy on the CIFAR-10 test set while staying under 5M parameters.
+Our final PyramidNet model (Bottleneck, [4,4,4], α=270) achieves 83.50%/83.66% accuracy on the CIFAR-10 Kaggle test set while staying under 5M parameters.
 
 ## Usage
 
@@ -45,12 +45,26 @@ To get started, either:
 1. Run the comprehensive notebook `Deep_residuals.ipynb`
 2. Use the individual Python scripts for specific tasks
 
-For training from scratch:
+### Training
+
+To train the model from scratch, run:
+
 ```bash
 python train.py
 ```
 
+Alternatively, you can use the following command to train and visualize the model architecture:
+
+```bash
+python main.py --show_model --blocks 4 4 4 --alpha 270
+```
+
+### Evaluation
+
 For evaluating a trained model:
+
 ```bash
 python test.py
 ```
+
+This setup allows for flexible model training and evaluation while ensuring optimal performance for CIFAR-10 classification.
